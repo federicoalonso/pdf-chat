@@ -4,20 +4,23 @@ import numpy as np
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
-from langchain.text_splitter import CharacterTextSplitter, RecursiveCharacterTextSplitter
+from langchain.text_splitter import CharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
-# from langchain.vectorstores.pgvector import PGVector
 import psycopg2
 from pgvector.psycopg2 import register_vector
 from psycopg2.extras import execute_values
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
-from langchain.chat_models import ChatOpenAI
-from htmlTemplate import css, bot_template, user_template
-import openai
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-openai.organization = os.getenv("OPENAI_ORG")
+from langchain.llms.openai import OpenAIChat
+from langchain.prompts import PromptTemplate
+from langchain.chains import ConversationChain
+from langchain.memory import (
+    ConversationBufferWindowMemory,
+    CombinedMemory,
+    ConversationSummaryBufferMemory
+)
+from langchain.memory.chat_message_histories import RedisChatMessageHistory
+
+from htmlTemplate import css, bot_template, user_template
 
 def configure_db():
     conn_string = os.getenv("CONNECTION_STRING")
@@ -86,24 +89,20 @@ def get_vector_store(text_chunks):
     document_vectors = embeddings.embed_documents([t for t in text_chunks])
     return document_vectors
 
-# def get_conversation_chain(vectorstore):
-#     llm = ChatOpenAI()
-#     memory = ConversationBufferMemory(memory_key="chat_histroy", return_messages=True)
-#     conversation = ConversationalRetrievalChain(
-#         llm=llm,
-#         retriever=vectorstore.as_retriever(),
-#         memory=memory,
-#     )
-#     return conversation
-
-def get_completion_from_messages(messages, model="gpt-3.5-turbo-0613", temperature=0, max_tokens=1500):
-    response = openai.ChatCompletion.create(
-        model=model,
-        messages=messages,
-        temperature=temperature, 
-        max_tokens=max_tokens, 
+def get_completion_from_messages(prompt, memory, llm):
+    
+    conversation = ConversationChain(
+        llm=llm, 
+        verbose=True, 
+        memory=memory, 
+        prompt=prompt
     )
-    return response.choices[0].message["content"]
+
+    response = conversation.predict()
+
+    st.write(response)
+
+    return response
 
 # Helper function: get embeddings for a text
 def get_embeddings(text):
@@ -112,29 +111,59 @@ def get_embeddings(text):
     return document_vectors[0]
 
 def process_input_with_retrieval(user_input):
-    delimiter = "```"
+    email = "fede"
+    message_history = RedisChatMessageHistory(
+        url="redis://localhost:6379/0", ttl=1200, session_id=email
+    )
+
+    summary_history = RedisChatMessageHistory(
+        url="redis://localhost:6379/0", ttl=600, session_id=email + "_summary"
+    )
+
+    llm = OpenAIChat(
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        model_name="gpt-3.5-turbo",
+        temperature=0,
+        max_tokens=1500,
+    )
+
+    conv_memory = ConversationBufferWindowMemory(
+        memory_key="chat_history_lines", chat_memory=message_history, input_key="input", k=5
+    )
 
     #Step 1: Get documents related to the user input from database
     related_docs = get_top3_similar_docs(get_embeddings(user_input))
 
-    # Step 2: Get completion from OpenAI API
-    # Set system message to help set appropriate tone and context for model
-    system_message = f"""
-    Eres un chatbot amistoso. \
-    Puedes responder preguntas sobre lo que te pregunten. \
-    Con respuestas cortas y concisas. \
-    """
+    assistant_memory = f"Información relevante para asistirte: \n {related_docs[0][0]} \n {related_docs[1][0]} {related_docs[2][0]}"
 
-    # Prepare messages to pass to model
-    # We use a delimiter to help the model understand the where the user_input starts and ends
-    messages = [
-        {"role": "system", "content": system_message},
-        {"role": "user", "content": f"{delimiter}{user_input}{delimiter}"},
-        {"role": "assistant", "content": f"Información relevante para asistirte: \n {related_docs[0][0]} \n {related_docs[1][0]} {related_docs[2][0]}"}   
-    ]
+    summary_memory = ConversationSummaryBufferMemory(llm=llm, input_key="input", chat_memory=summary_history, max_token_limit=1500)
 
-    final_response = get_completion_from_messages(messages)
-    return final_response
+    _DEFAULT_TEMPLATE = """Eres un bot que constesta las preguntas de un humano, brindando mayor importancia a la información obtenida de los documentos relevantes
+    Documentos relevantes:
+    """ + assistant_memory + """
+    Summary of conversation:
+    {history}
+    Current conversation:
+    {chat_history_lines}
+    Humano: {input}
+    AI:"""
+    PROMPT = PromptTemplate(
+        input_variables=["history", "input", "chat_history_lines"],
+        template=_DEFAULT_TEMPLATE,
+    )
+
+    memory = CombinedMemory(memories=[conv_memory, summary_memory])
+
+    conversation = ConversationChain(
+        llm=llm, 
+        verbose=False, 
+        memory=memory, 
+        prompt=PROMPT
+    )
+
+    response = conversation.predict(input=user_input)
+
+    return response
 
 
 def handle_user_question(user_question):
@@ -179,8 +208,6 @@ def main():
                 vectorstore = get_vector_store(text_chunks)
                 cur = st.session_state.conn.cursor()
                 insert_db(vectorstore, text_chunks, cur, st.session_state.conn)
-                
-                # st.session_state.conversation = get_conversation_chain(vectorstore)
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,8 @@
 import streamlit as st
 from dotenv import load_dotenv
 from PyPDF2 import PdfReader
-from langchain.text_splitter import CharacterTextSplitter
+from langchain.text_splitter import CharacterTextSplitter, RecursiveCharacterTextSplitter
+from langchain.embeddings import OpenAIEmbeddings
 
 def get_pdf_text(pdf_files):
     text = ""
@@ -21,6 +22,11 @@ def get_text_chunks(text):
     chunks = text_splitter.split_text(text)
     return chunks
 
+def get_vector_store(text_chunks):
+    embeddings = OpenAIEmbeddings()
+    document_vectors = embeddings.embed_documents([t for t in text_chunks])
+    return document_vectors
+
 def main():
     load_dotenv()
     st.set_page_config(page_title="PDF Chat App", page_icon=":books:", layout="wide")
@@ -37,7 +43,8 @@ def main():
             with st.spinner("Processing..."):
                 raw_text = get_pdf_text(pdf_doct)
                 text_chunks = get_text_chunks(raw_text)
-                st.write(text_chunks)
+                vectorstore = get_vector_store(text_chunks)
+                st.write(vectorstore)
                 st.success("Done!")
 
 if __name__ == "__main__":

@@ -139,7 +139,14 @@ def process_input_with_retrieval(user_input):
 
 def handle_user_question(user_question):
     response = process_input_with_retrieval(user_question)
-    st.write(response)
+    st.session_state.chat_history.append({"role": "user", "content": user_question})
+    st.session_state.chat_history.append({"role": "bot", "content": response})
+
+    for i, message in reversed(list(enumerate(st.session_state.chat_history))):
+        if message["role"] == "user":
+            st.write(user_template.replace("{{MSG}}", message["content"]), unsafe_allow_html=True)
+        else:
+            st.write(bot_template.replace("{{MSG}}", message["content"]), unsafe_allow_html=True)
 
 def main():
     load_dotenv()
@@ -148,6 +155,8 @@ def main():
         st.session_state.conn = configure_db()
     if "conversation" not in st.session_state:
         st.session_state.conversation = None
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
 
     st.set_page_config(page_title="PDF Chat App", page_icon=":books:", layout="wide")
 
@@ -159,9 +168,6 @@ def main():
     user_question = st.text_input("Ask your question here:")
     if user_question:
         handle_user_question(user_question)
-
-    st.write(user_template, unsafe_allow_html=True)
-    st.write(bot_template, unsafe_allow_html=True)
 
     with st.sidebar:
         st.subheader("Your documents")

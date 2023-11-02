@@ -6,3 +6,5 @@ faiss-cpu
 openai
 huggingface_hub
 tiktoken
+psycopg2-binary
+pgvector
